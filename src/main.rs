@@ -55,10 +55,23 @@ fn read_freq(core: usize, file: &str) -> u64 {
         .unwrap_or(0)
 }
 
+fn read_meminfo(key: &str) -> u64 {
+    fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with(key))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+        })
+        .map(|kb| kb * 1024)
+        .unwrap_or(0)
+}
+
 fn render(sys: &System, cores: usize) {
     let total_ram = sys.total_memory();
     let used_ram = sys.used_memory();
-    let free_ram = sys.free_memory();
+    let avail_ram = sys.free_memory();
+    let cache_ram = read_meminfo("Buffers:") + read_meminfo("Cached:") + read_meminfo("SReclaimable:");
 
     println!("┌─────────────────────────────────────┐");
     println!("│       System Resource Monitor       │");
@@ -77,7 +90,8 @@ fn render(sys: &System, cores: usize) {
     println!("├──────────────── RAM ────────────────┤");
     println!("│  {:<9} : {:<23}│", "Total", format_bytes(total_ram));
     println!("│  {:<9} : {:<23}│", "Used", format_bytes(used_ram));
-    println!("│  {:<9} : {:<23}│", "Free", format_bytes(free_ram));
+    println!("│  {:<9} : {:<23}│", "Avail", format_bytes(avail_ram));
+    println!("│  {:<9} : {:<23}│", "Cache", format_bytes(cache_ram));
     let ram_pct = used_ram as f32 / total_ram as f32 * 100.0;
     println!("│  {:<9} : {}│", "Usage", bar(ram_pct, 14));
 
