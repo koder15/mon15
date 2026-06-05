@@ -1,6 +1,8 @@
 use sysinfo::System;
 use std::{fs, thread, time::Duration};
 
+use sysinfo::MINIMUM_CPU_UPDATE_INTERVAL;
+
 const RESET: &str = "\x1b[0m";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
@@ -55,6 +57,21 @@ fn read_freq(core: usize, file: &str) -> u64 {
         .unwrap_or(0)
 }
 
+// Fallback when cpufreq sysfs is unavailable (e.g. some VMs): parse the
+// per-core "cpu MHz" lines from /proc/cpuinfo, returned as kHz to match
+// the sysfs units expected by format_freq.
+fn cpuinfo_freqs() -> Vec<u64> {
+    fs::read_to_string("/proc/cpuinfo")
+        .map(|s| {
+            s.lines()
+                .filter(|l| l.starts_with("cpu MHz"))
+                .filter_map(|l| l.split(':').nth(1)?.trim().parse::<f64>().ok())
+                .map(|mhz| (mhz * 1000.0) as u64)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn read_meminfo(key: &str) -> u64 {
     fs::read_to_string("/proc/meminfo")
         .ok()
@@ -79,10 +96,13 @@ fn render(sys: &System, cores: usize) {
     println!("├──────────────── CPU ────────────────┤");
     println!("│  {:<9} : {:<23}│", "Cores", cores);
     println!("├─────────────────────────────────────┤");
-    for i in 0..cores {
-        let cur = read_freq(i, "scaling_cur_freq");
-        let max = read_freq(i, "cpuinfo_max_freq");
-        let pct = if max > 0 { cur as f32 / max as f32 * 100.0 } else { 0.0 };
+    let fallback_freqs = cpuinfo_freqs();
+    for (i, cpu) in sys.cpus().iter().enumerate() {
+        let pct = cpu.cpu_usage();
+        let cur = match read_freq(i, "scaling_cur_freq") {
+            0 => fallback_freqs.get(i).copied().unwrap_or(0),
+            f => f,
+        };
         let label = format!("Core {:>2}", i);
         println!("│  {:<9} : {} {}│", label, bar(pct, 9), format_freq(cur));
     }
@@ -103,7 +123,14 @@ fn main() {
     let mut sys = System::new_all();
     let cores = cpu_count();
 
+    // Prime CPU usage: it's measured as a delta between two refreshes,
+    // so an initial sample (with the required minimum interval) is needed
+    // before the first reading is meaningful.
+    sys.refresh_cpu_usage();
+    thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL);
+
     loop {
+        sys.refresh_cpu_usage();
         sys.refresh_memory();
         print!("\x1b[2J\x1b[H");
         render(&sys, cores);
